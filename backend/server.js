@@ -1,15 +1,15 @@
 const express = require('express');
-const http = require('http');
+const http = require('http'); // Required for Socket.IO
 const socketIo = require('socket.io');
 const connectDB = require('./config/db');
 const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
-const server = http.createServer(app);
+const server = http.createServer(app); // Create HTTP server with express app
 const io = socketIo(server, {
     cors: {
-        origin: ["http://localhost:3000", "http://localhost:19006"],
+        origin: ["http://localhost:3000", "http://localhost:19006"], // React and React Native dev servers
         methods: ["GET", "POST"]
     }
 });
@@ -19,13 +19,15 @@ connectDB();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json()); // Body parser
 
 // Define Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/quizzes', require('./routes/quizManage'));
 
-const activeGames = {};
+// Temporary in-memory game states (for simplicity in this example)
+// In a real app, this would be more robustly managed with GameSession model and DB queries
+const activeGames = {}; // { gamePin: { quiz: {}, hostSocketId: '', players: [{ socketId: '', nickname: '', score: 0 }], currentQuestionIndex: -1 } }
 
 // Socket.IO Logic
 io.on('connection', (socket) => {
@@ -34,7 +36,7 @@ io.on('connection', (socket) => {
     // --- Host Events ---
     socket.on('host:createGame', async ({ quizId, hostId }) => {
         try {
-            const Quiz = require('./models/quiz');
+            const Quiz = require('./models/quiz'); // Require inside to avoid circular dependency
             const GameSession = require('./models/GameSession');
 
             const quiz = await Quiz.findById(quizId);
@@ -46,6 +48,7 @@ io.on('connection', (socket) => {
             let gamePin;
             let existingGame;
             do {
+                // Generate a 6-digit random PIN
                 gamePin = Math.floor(100000 + Math.random() * 900000).toString();
                 existingGame = await GameSession.findOne({ gamePin });
             } while (existingGame);
@@ -59,17 +62,15 @@ io.on('connection', (socket) => {
             await newGameSession.save();
 
             activeGames[gamePin] = {
-                quiz: quiz.toObject(), // Convert Mongoose document to plain object to avoid issues with modification later
+                quiz: quiz,
                 hostId: hostId,
                 hostSocketId: socket.id,
                 players: [],
                 currentQuestionIndex: -1,
-                gameSessionId: newGameSession._id,
-                // Track answers for current question to prevent multiple submissions per player
-                answeredPlayers: new Set()
+                gameSessionId: newGameSession._id // Store DB session ID
             };
 
-            socket.join(gamePin);
+            socket.join(gamePin); // Host joins the game room
             socket.emit('gameCreated', { gamePin, quizTitle: quiz.title });
             console.log(`Game created with PIN: ${gamePin} by host ${hostId}`);
 
@@ -79,32 +80,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    const sendQuestionToPlayers = (game, gamePin) => {
-        const currentQuestion = game.quiz.questions[game.currentQuestionIndex];
-        const questionDataForPlayers = {
-            questionIndex: game.currentQuestionIndex,
-            questionText: currentQuestion.questionText,
-            imageUrl: currentQuestion.imageUrl,
-            questionType: currentQuestion.questionType, // Send the question type
-
-            // Conditionally add answer options based on type
-            timeLimit: currentQuestion.timeLimit
-        };
-
-        if (currentQuestion.questionType === 'multiple-choice') {
-            questionDataForPlayers.answerOptions = currentQuestion.answerOptions.map(opt => ({ text: opt.text, _id: opt._id }));
-        }
-        // For True/False, Fill-in-the-Blank, and Match the Following,
-        // players generally don't need "options" in the same way (they provide their own input or select from a fixed set)
-        // so we don't send `answerOptions` or `matchingPairs` for these types.
-        // The client-side (player app) will render input fields based on `questionType`.
-
-        io.to(gamePin).emit('game:question', questionDataForPlayers);
-        game.answeredPlayers.clear(); // Reset for the new question
-        console.log(`Game ${gamePin}: Sending question ${game.currentQuestionIndex} (Type: ${currentQuestion.questionType})`);
-    };
-
-
     socket.on('host:startGame', (gamePin) => {
         const game = activeGames[gamePin];
         if (game && game.hostSocketId === socket.id && game.status === 'lobby') {
@@ -112,7 +87,15 @@ io.on('connection', (socket) => {
             game.currentQuestionIndex = 0;
             game.questionStartTime = Date.now(); // Mark question start time
 
-            sendQuestionToPlayers(game, gamePin);
+            const currentQuestion = game.quiz.questions[game.currentQuestionIndex];
+            io.to(gamePin).emit('game:question', {
+                questionIndex: game.currentQuestionIndex,
+                questionText: currentQuestion.questionText,
+                imageUrl: currentQuestion.imageUrl,
+                answerOptions: currentQuestion.answerOptions.map(opt => ({ text: opt.text, _id: opt._id })), // Don't send isCorrect
+                timeLimit: currentQuestion.timeLimit
+            });
+            console.log(`Game ${gamePin} started. Sending question ${game.currentQuestionIndex}`);
         } else {
             socket.emit('gameError', 'Cannot start game or not authorized.');
         }
@@ -125,7 +108,15 @@ io.on('connection', (socket) => {
 
             if (game.currentQuestionIndex < game.quiz.questions.length) {
                 game.questionStartTime = Date.now();
-                sendQuestionToPlayers(game, gamePin);
+                const currentQuestion = game.quiz.questions[game.currentQuestionIndex];
+                io.to(gamePin).emit('game:question', {
+                    questionIndex: game.currentQuestionIndex,
+                    questionText: currentQuestion.questionText,
+                    imageUrl: currentQuestion.imageUrl,
+                    answerOptions: currentQuestion.answerOptions.map(opt => ({ text: opt.text, _id: opt._id })),
+                    timeLimit: currentQuestion.timeLimit
+                });
+                console.log(`Game ${gamePin}: Moving to question ${game.currentQuestionIndex}`);
             } else {
                 // End of quiz
                 game.status = 'finished';
@@ -146,6 +137,7 @@ io.on('connection', (socket) => {
                     }
                 })();
 
+
                 io.to(gamePin).emit('game:endGame', finalResults);
                 console.log(`Game ${gamePin} finished. Final results sent.`);
                 delete activeGames[gamePin]; // Clean up in-memory game
@@ -159,6 +151,7 @@ io.on('connection', (socket) => {
     socket.on('player:joinGame', async ({ gamePin, nickname }) => {
         const game = activeGames[gamePin];
         if (game && game.status === 'lobby') {
+            // Check if nickname already exists in this game
             const existingPlayer = game.players.find(p => p.nickname === nickname);
             if (existingPlayer) {
                 socket.emit('joinError', 'Nickname already taken. Please choose another.');
@@ -167,7 +160,7 @@ io.on('connection', (socket) => {
 
             const player = { socketId: socket.id, nickname, score: 0 };
             game.players.push(player);
-            socket.join(gamePin);
+            socket.join(gamePin); // Player joins the game room
 
             socket.emit('joinedGame', { gamePin, nickname, quizTitle: game.quiz.title });
             io.to(game.hostSocketId).emit('playerJoined', { players: game.players.map(p => ({ nickname: p.nickname, score: p.score })) });
@@ -177,101 +170,58 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('player:submitAnswer', ({ gamePin, questionIndex, answer }) => { // `answer` will be dynamic
+    socket.on('player:submitAnswer', ({ gamePin, questionIndex, selectedOptionId }) => {
         const game = activeGames[gamePin];
-        const player = game?.players.find(p => p.socketId === socket.id);
+        if (game && game.status === 'inProgress' && game.currentQuestionIndex === questionIndex) {
+            const player = game.players.find(p => p.socketId === socket.id);
+            if (player) {
+                const currentQuestion = game.quiz.questions[questionIndex];
+                const selectedOption = currentQuestion.answerOptions.find(opt => opt._id.toString() === selectedOptionId);
 
-        // Prevent multiple submissions for the same question
-        if (!game || !player || game.status !== 'inProgress' || game.currentQuestionIndex !== questionIndex || game.answeredPlayers.has(socket.id)) {
-            socket.emit('gameError', 'Invalid game state or already submitted answer.');
-            return;
-        }
+                let isCorrect = false;
+                let pointsEarned = 0;
 
-        const currentQuestion = game.quiz.questions[questionIndex];
-        let isCorrect = false;
-        let pointsEarned = 0;
-
-        switch (currentQuestion.questionType) {
-            case 'multiple-choice':
-                // `answer` is `selectedOptionId`
-                const selectedOption = currentQuestion.answerOptions.find(opt => opt._id.toString() === answer.selectedOptionId);
                 if (selectedOption && selectedOption.isCorrect) {
                     isCorrect = true;
+                    // Calculate points based on time taken (Kahoot-style)
+                    const timeTaken = (Date.now() - game.questionStartTime) / 1000; // in seconds
+                    const maxPoints = 1000; // Max points for quick answer
+                    const timeLimit = currentQuestion.timeLimit;
+                    const pointsPerSecond = maxPoints / timeLimit;
+                    pointsEarned = Math.max(0, Math.floor(maxPoints - (timeTaken * pointsPerSecond)));
+                    player.score += pointsEarned;
                 }
-                break;
-            case 'true-false':
-                // `answer` is `selectedBoolean` (true/false)
-                if (currentQuestion.trueFalseAnswer === answer.selectedBoolean) {
-                    isCorrect = true;
-                }
-                break;
-            case 'fill-in-the-blank':
-                // `answer` is `submittedText`
-                // Perform case-insensitive and trim comparison
-                if (currentQuestion.blankAnswer.trim().toLowerCase() === answer.submittedText.trim().toLowerCase()) {
-                    isCorrect = true;
-                }
-                break;
-            case 'match-the-following':
-                // `answer` is an array of `{ termId: 'playerSelectedDefinitionId' }`
-                // This is more complex and requires careful matching.
-                // For simplicity, let's assume `answer` is an array like `[{ term: 'PlayerTerm', definition: 'PlayerDefinition' }]`
-                // Or, more robustly, a map of submitted term-to-definition pairings.
-                // Here's a basic check assuming `answer.submittedPairs` is an array of `{ term: 'termValue', definition: 'definitionValue' }`
-                // You'd ideally match IDs or ensure exact text matches for all pairs.
-                isCorrect = true; // Assume correct until proven wrong
-                if (answer.submittedPairs && answer.submittedPairs.length === currentQuestion.matchingPairs.length) {
-                    for (const playerPair of answer.submittedPairs) {
-                        const correctPair = currentQuestion.matchingPairs.find(
-                            cp => cp.term.trim().toLowerCase() === playerPair.term.trim().toLowerCase()
-                        );
-                        if (!correctPair || correctPair.definition.trim().toLowerCase() !== playerPair.definition.trim().toLowerCase()) {
-                            isCorrect = false;
-                            break;
-                        }
-                    }
-                } else {
-                    isCorrect = false; // Mismatched number of pairs
-                }
-                break;
-            default:
-                console.warn(`Unknown question type: ${currentQuestion.questionType}`);
-                break;
+
+                socket.emit('answerResult', { isCorrect, pointsEarned, currentScore: player.score });
+                io.to(game.hostSocketId).emit('playerAnswered', {
+                    nickname: player.nickname,
+                    isCorrect,
+                    score: player.score,
+                    questionIndex
+                });
+                io.to(gamePin).emit('game:scoreUpdate', game.players.map(p => ({ nickname: p.nickname, score: p.score })));
+
+                console.log(`Player ${player.nickname} submitted answer for Q${questionIndex}. Correct: ${isCorrect}, Score: ${player.score}`);
+            }
+        } else {
+            socket.emit('gameError', 'Invalid game state for answering.');
         }
-
-        if (isCorrect) {
-            const timeTaken = (Date.now() - game.questionStartTime) / 1000;
-            const maxPoints = 1000;
-            const timeLimit = currentQuestion.timeLimit;
-            const pointsPerSecond = maxPoints / timeLimit;
-            pointsEarned = Math.max(0, Math.floor(maxPoints - (timeTaken * pointsPerSecond)));
-            player.score += pointsEarned;
-        }
-
-        game.answeredPlayers.add(socket.id); // Mark player as having answered
-
-        socket.emit('answerResult', { isCorrect, pointsEarned, currentScore: player.score });
-        io.to(game.hostSocketId).emit('playerAnswered', {
-            nickname: player.nickname,
-            isCorrect,
-            score: player.score,
-            questionIndex
-        });
-        io.to(gamePin).emit('game:scoreUpdate', game.players.map(p => ({ nickname: p.nickname, score: p.score })));
-
-        console.log(`Player ${player.nickname} submitted answer for Q${questionIndex} (Type: ${currentQuestion.questionType}). Correct: ${isCorrect}, Score: ${player.score}`);
     });
 
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);
+        // Handle player/host disconnection:
+        // Iterate through activeGames to find if this socket was a player or host
         for (const gamePin in activeGames) {
             const game = activeGames[gamePin];
+            // If host disconnected
             if (game.hostSocketId === socket.id) {
                 console.log(`Host of game ${gamePin} disconnected. Ending game.`);
                 io.to(gamePin).emit('gameEndedUnexpectedly', 'Host disconnected.');
                 delete activeGames[gamePin];
                 break;
             }
+            // If player disconnected
             const playerIndex = game.players.findIndex(p => p.socketId === socket.id);
             if (playerIndex !== -1) {
                 const disconnectedPlayer = game.players.splice(playerIndex, 1)[0];
