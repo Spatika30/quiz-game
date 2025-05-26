@@ -1,50 +1,54 @@
-const Quiz = require('../models/quiz');
+// controllers/quizController.js
+const supabase = require('../config/supabaseClient');
 
+/**
+ * POST /api/quizzes
+ * body: { title, questions: [ { questionText, imageUrl, answerOptions, timeLimit }, ... ] }
+ */
 exports.createQuiz = async (req, res) => {
-    const { title, description, questions } = req.body;
-    try {
-        const newQuiz = new Quiz({
-            title,
-            description,
-            questions,
-            creator: req.user.id, // From auth middleware
-        });
-        const quiz = await newQuiz.save();
-        res.status(201).json(quiz);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send('Server Error');
-    }
+  const { title, questions } = req.body;
+
+  const { data: quiz, error } = await supabase
+    .from('quizzes')
+    .insert([{ title, questions, owner_id: req.user.id }])
+    .select()
+    .single();
+
+  if (error) return res.status(400).json({ msg: error.message });
+  return res.status(201).json(quiz);
 };
 
+/**
+ * GET /api/quizzes
+ * Returns quizzes owned by the logged-in user.
+ */
 exports.getQuizzes = async (req, res) => {
-    try {
-        const quizzes = await Quiz.find({ creator: req.user.id }).sort({ createdAt: -1 });
-        res.json(quizzes);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send('Server Error');
-    }
+  const { data, error } = await supabase
+    .from('quizzes')
+    .select('*')
+    .eq('owner_id', req.user.id)
+    .order('created_at', { ascending: false });
+
+  if (error) return res.status(400).json({ msg: error.message });
+  return res.json(data);
 };
 
+/**
+ * GET /api/quizzes/:id
+ * Returns a single quiz if the caller owns it.
+ */
 exports.getQuizById = async (req, res) => {
-    try {
-        const quiz = await Quiz.findById(req.params.id);
-        if (!quiz) {
-            return res.status(404).json({ msg: 'Quiz not found' });
-        }
-        // Optional: Add authorization check if only creator can view their quiz details
-        if (quiz.creator.toString() !== req.user.id) {
-             return res.status(403).json({ msg: 'Not authorized to view this quiz' });
-        }
-        res.json(quiz);
-    } catch (err) {
-        console.error(err.message);
-        if (err.kind === 'ObjectId') {
-            return res.status(404).json({ msg: 'Quiz not found' });
-        }
-        res.status(500).send('Server Error');
-    }
-};
+  const { id } = req.params;
 
-// ... add updateQuiz, deleteQuiz as needed
+  const { data: quiz, error } = await supabase
+    .from('quizzes')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (error) return res.status(404).json({ msg: 'Quiz not found' });
+  if (quiz.owner_id !== req.user.id)
+    return res.status(403).json({ msg: 'Not your quiz' });
+
+  return res.json(quiz);
+};

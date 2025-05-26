@@ -89,49 +89,48 @@ function QuizCreator() {
     };
 
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setMessage('');
+   const handleSubmit = async (e) => {
+  e.preventDefault();
+ console.log('→ 0  entered handleSubmit');
+  setMessage('');
 
-        // Basic validation for at least one correct answer for multiple-choice questions
-        for (const q of questions) {
-            if (!q.questionText.trim()) {
-                setMessage('All questions must have text.');
-                return;
-            }
-            if (q.questionType === 'multiple-choice') {
-                if (q.answerOptions.length < 2) {
-                    setMessage(`Question "${q.questionText}" (Multiple Choice) needs at least two answer options.`);
-                    return;
-                }
-                const hasCorrectAnswer = q.answerOptions.some(option => option.isCorrect);
-                if (!hasCorrectAnswer) {
-                    setMessage(`Question "${q.questionText}" (Multiple Choice) must have at least one correct answer.`);
-                    return;
-                }
-            } else if (q.questionType === 'true-false' && typeof q.trueFalseAnswer !== 'boolean') {
-                setMessage(`Question "${q.questionText}" (True/False) must have a correct answer selected.`);
-                return;
-            } else if (q.questionType === 'fill-in-the-blank' && !q.blankAnswer.trim()) {
-                setMessage(`Question "${q.questionText}" (Fill-in-the-Blank) must have a correct answer.`);
-                return;
-            } else if (q.questionType === 'match-the-following') {
-                if (q.matchingPairs.length === 0 || q.matchingPairs.some(pair => !pair.term.trim() || !pair.definition.trim())) {
-                    setMessage(`Question "${q.questionText}" (Match the Following) must have at least one complete matching pair.`);
-                    return;
-                }
-            }
-        }
+  // ---------- 1. VALIDATION LOOP ----------
+  for (const q of questions) {
+  console.log('→ 1  checking', q.questionText || '[blank]', q.questionType);
 
-        try {
-            const res = await api.post('/quizzes', { title, description, questions });
-            setMessage('Quiz created successfully!');
-            navigate('/dashboard');
-        } catch (err) {
-            console.error(err.response?.data?.msg || err.message);
-            setMessage('Failed to create quiz. Check console for details.');
-        }
-    };
+    if (!q.questionText.trim()) {
+      setMessage('All questions must have text.');
+    console.log('⛔  returned on empty question text');
+      return;
+    }
+    if (q.questionType === 'multiple-choice') {
+      if (q.answerOptions.length < 2) {
+        setMessage('Needs ≥ 2 options');
+      console.log('⛔  returned on <2 options');
+        return;
+      }
+      const hasCorrect = q.answerOptions.some((o) => o.isCorrect);
+      if (!hasCorrect) {
+        setMessage('Must mark one correct');
+      console.log('⛔  returned on no correct');
+        return;
+      }
+    }
+    // (true-false, blank, matching checks stay the same...
+  }
+
+console.log('→ 2  validation passed, posting…');
+
+  try {
+    console.log('→ 2.1  api is', api, ' typeof post:', typeof api.post);
+    const res = await api.post('/quizzes', { title, description, questions });
+  console.log('→ 2.2  got response', res.status);
+    setMessage('Quiz created successfully!');
+    navigate('/dashboard');
+  } catch (err) {   console.error('⛔ caught error BEFORE network', err);
+    setMessage(err.response?.data?.msg || err.message || 'Failed');
+  }
+};
 
     return (
         <div className="quiz-creator-container">

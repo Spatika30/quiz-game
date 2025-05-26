@@ -1,24 +1,15 @@
 import axios from 'axios';
+import { supabase } from './lib/supabase';
 
 const api = axios.create({
-    baseURL: 'http://localhost:5001/api', // Your backend URL
-    headers: {
-        'Content-Type': 'application/json',
-    },
+  baseURL: process.env.REACT_APP_BACKEND_URL || 'http://localhost:5001/api'
 });
 
-// Add a request interceptor to include the token
-api.interceptors.request.use(
-    (config) => {
-        const token = localStorage.getItem('token');
-        if (token) {
-            config.headers['x-auth-token'] = token;
-        }
-        return config;
-    },
-    (error) => {
-        return Promise.reject(error);
-    }
-);
+api.interceptors.request.use(async (config) => {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
 
 export default api;

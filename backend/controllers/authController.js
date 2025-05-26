@@ -1,52 +1,55 @@
-const User = require('../models/User');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-require('dotenv').config();
+// controllers/authController.js
+const supabase = require('../config/supabaseClient');
 
-const generateToken = (id) => {
-    return jwt.sign({ user: { id } }, process.env.JWT_SECRET, {
-        expiresIn: '1h',
-    });
-};
-
+/**
+ * POST /api/auth/register
+ * body: { username, email, password, role? }
+ */
 exports.registerUser = async (req, res) => {
-    const { username, email, password } = req.body;
+  const { username, email, password, role = 'quizMaster' } = req.body;
 
-    try {
-        let user = await User.findOne({ email });
-        if (user) {
-            return res.status(400).json({ msg: 'User already exists' });
-        }
+  // 1. Create the auth user (hashing handled by Supabase)
+  const { data: signUpData, error: signUpErr } =
+    await supabase.auth.signUp({ email, password });
 
-        user = new User({ username, email, password });
-        await user.save();
+  if (signUpErr) return res.status(400).json({ msg: signUpErr.message });
 
-        const token = generateToken(user.id);
-        res.status(201).json({ token, user: { id: user.id, username: user.username, email: user.email } });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send('Server Error');
-    }
+  const uid = signUpData.user.id;
+
+  // 2. Insert extra fields into the public.profiles table
+  const { error: profileErr } = await supabase.from('profiles').insert([
+    { id: uid, username, role }
+  ]);
+
+  if (profileErr) {
+    // roll back the auth user so you don’t orphan a record
+    await supabase.auth.admin.deleteUser(uid);
+    return res.status(400).json({ msg: profileErr.message });
+  }
+
+  return res.status(201).json({
+    msg: 'Signup successful – check your email to confirm your account.'
+  });
 };
 
+/**
+ * POST /api/auth/login
+ * body: { email, password }
+ */
 exports.loginUser = async (req, res) => {
-    const { email, password } = req.body;
+  const { email, password } = req.body;
 
-    try {
-        let user = await User.findOne({ email });
-        if (!user) {
-            return res.status(400).json({ msg: 'Invalid Credentials' });
-        }
+  const { data, error } =
+    await supabase.auth.signInWithPassword({ email, password });
 
-        const isMatch = await user.matchPassword(password);
-        if (!isMatch) {
-            return res.status(400).json({ msg: 'Invalid Credentials' });
-        }
+  if (error) return res.status(400).json({ msg: error.message });
 
-        const token = generateToken(user.id);
-        res.json({ token, user: { id: user.id, username: user.username, email: user.email } });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send('Server Error');
+  // You can stick with Supabase’s JWT or wrap it as you like
+  res.json({
+    token: data.session.access_token,
+    user: {
+      id:   data.user.id,
+      email: data.user.email
     }
+  });
 };
